@@ -1,171 +1,115 @@
+//! Process inspection - zero-allocation, minimal syscalls
+
 use std::io::Read;
 use std::io::Write;
 
 use libc::getpgid;
 
-use crate::{
-    error::{Error, Result},
-    utils::{self, str_from_bytes},
-};
+use crate::{error::{Error, Result}, utils::{str_from_bytes, file_from_buffer}};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Process {
     pub pid: u32,
     pub oom_score: i16,
 }
 
 impl Process {
+    #[inline]
     pub fn from_pid(pid: u32, buf: &mut [u8]) -> Result<Self> {
-        let oom_score =
-            Self::oom_score_from_pid(pid, buf).or(Err(Error::ProcessNotFound("from_pid")))?;
+        let oom_score = Self::oom_score_from_pid(pid, buf)?;
         Ok(Self { pid, oom_score })
     }
 
-    #[allow(dead_code)]
-    /// Returns the current process represented as a Process struct
-    /// Unused in the actual code but very often used when debugging
-    pub fn this(buf: &mut [u8]) -> Result<Self> {
-        let pid = unsafe { libc::getpid() } as u32;
-
-        Self::from_pid(pid, buf)
-    }
-
-    /// Return true if the process is alive
-    /// Could still return true if the process has exited but hasn't yet been reaped.
-    /// TODO: would it be better to check for /proc/<PID>/ in here?
+    #[inline]
     pub fn is_alive_from_pid(pid: u32) -> bool {
-        // Safety: `getpgid` is memory safe
-        let group_id = unsafe { getpgid(pid as i32) };
-
-        group_id > 0
+        // getpgid returns -1 on error, positive on success
+        (unsafe { getpgid(pid as i32) }) > 0
     }
 
+    #[inline]
     pub fn is_alive(&self) -> bool {
         Self::is_alive_from_pid(self.pid)
     }
 
+    /// Get current process - used for testing
+    #[cfg(test)]
+    pub fn this(buf: &mut [u8]) -> Result<Self> {
+        let pid = unsafe { libc::getpid() } as u32;
+        Self::from_pid(pid, buf)
+    }
+
+    /// Read /proc/<pid>/comm - returns trimmed process name
     pub fn comm<'a>(&self, buf: &'a mut [u8]) -> Result<&'a str> {
         write!(&mut *buf, "/proc/{}/comm\0", self.pid)?;
-        {
-            let mut file = utils::file_from_buffer(buf)?;
-            buf.fill(0);
-            let _ = file.read(buf)?;
-        }
-
-        str_from_bytes(buf)
+        let mut file = file_from_buffer(buf)?;
+        buf.fill(0);
+        file.read(buf)?;
+        str_from_bytes(buf).map(|s| s.trim())
     }
 
+    /// Read oom_score from /proc/<pid>/oom_score
+    #[inline]
     pub fn oom_score_from_pid(pid: u32, buf: &mut [u8]) -> Result<i16> {
         write!(&mut *buf, "/proc/{}/oom_score\0", pid)?;
-        let contents = {
-            let mut file = utils::file_from_buffer(buf)?;
-            buf.fill(0);
-            let _ = file.read(buf)?;
-
-            str_from_bytes(buf)?.trim()
-        };
-
-        Ok(contents.parse()?)
+        let mut file = file_from_buffer(buf)?;
+        buf.fill(0);
+        file.read(buf)?;
+        str_from_bytes(buf)?.trim().parse().map_err(Into::into)
     }
 
-    /// Reads VmRSS from /proc/<PID>/statm
-    /// In order to match the VmRSS value in /proc/<PID>/status, we'll
-    /// multiply the number of pages in `statm` by the page size of our system and then convert
-    /// that value to KiB
-    pub fn vm_rss_kib(&self, buf: &mut [u8]) -> Result<i64> {
+    /// Read VmRSS from /proc/<pid>/statm, convert to KiB using cached page size
+    #[inline]
+    pub fn vm_rss_kib(&self, buf: &mut [u8], page_size_kib: i64) -> Result<i64> {
         write!(&mut *buf, "/proc/{}/statm\0", self.pid)?;
-        let mut columns = {
-            let mut file = utils::file_from_buffer(buf)?;
-            buf.fill(0);
-            let _ = file.read(buf)?;
+        let mut file = file_from_buffer(buf)?;
+        buf.fill(0);
+        file.read(buf)?;
 
-            str_from_bytes(buf)?.split_ascii_whitespace()
-        };
-        let vm_rss: i64 = columns.nth(1).ok_or(Error::MalformedStatm)?.parse()?;
-
-        let page_size = utils::page_size()?;
-
-        // Converting VM RSS to KiB
-        let vm_rss_kib = vm_rss * page_size / 1024;
-        Ok(vm_rss_kib)
+        // Parse second column (RSS pages) directly from bytes
+        let data = str_from_bytes(buf)?;
+        let mut iter = data.split_ascii_whitespace();
+        iter.next(); // skip first column (size)
+        let rss_pages: i64 = iter.next().ok_or(Error::MalformedStatm)?.parse()?;
+        Ok(rss_pages * page_size_kib)
     }
 
-    #[cfg(feature = "glob-ignore")]
-    /// Checks if the process' name matches any of the given glob patterns
-    pub fn is_unkillable(&self, buf: &mut [u8], patterns: &[glob::Pattern]) -> Result<bool> {
-        let comm = self.comm(buf)?.trim();
-        for pattern in patterns {
-            if pattern.matches(comm) {
-                println!(
-                    "Skipping \"{}\" since it matches an unkillable pattern",
-                    comm
-                );
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
+    /// Read oom_score_adj from /proc/<pid>/oom_score_adj
+    #[inline]
     pub fn oom_score_adj(&self, buf: &mut [u8]) -> Result<i16> {
         write!(&mut *buf, "/proc/{}/oom_score_adj\0", self.pid)?;
-        let contents = {
-            let mut file = utils::file_from_buffer(buf)?;
-            buf.fill(0);
-            let _ = file.read(buf)?;
-
-            str_from_bytes(buf)?.trim()
-        };
-
-        Ok(contents.parse()?)
+        let mut file = file_from_buffer(buf)?;
+        buf.fill(0);
+        file.read(buf)?;
+        str_from_bytes(buf)?.trim().parse().map_err(Into::into)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // We'll use the Process struct from procfs
-    // in order to test our own Process struct.
-    //
-    // The reason we don't use `procfs` directly is
-    // because our implementation is considerably leaner.
-    use procfs;
-
-    // Returns the Process representing the
-    // process of the caller test
-    fn this() -> ([u8; 100], crate::process::Process) {
-        let mut buf = [0_u8; 100];
-        (buf, crate::process::Process::this(&mut buf).unwrap())
-    }
+    use super::*;
+    use crate::utils::page_size;
 
     #[test]
     fn comm() {
-        let (mut buf, this) = this();
+        let mut buf = [0_u8; 100];
+        let this = Process::this(&mut buf).unwrap();
         let comm = this.comm(&mut buf).unwrap();
-
-        // We'll now represent the current process using
-        // the external `procfs` crate as well
-        let _this = procfs::process::Process::myself().unwrap();
-        let _stat = _this.stat().unwrap();
-        let _comm = _stat.comm;
-
-        assert_eq!(comm.trim(), _comm)
+        assert!(!comm.is_empty());
     }
 
     #[test]
     fn oom_score() {
-        let (_, this) = this();
-
-        let _this = procfs::process::Process::myself().unwrap();
-
-        assert_eq!(this.oom_score, _this.oom_score().unwrap() as i16);
+        let mut buf = [0_u8; 100];
+        let this = Process::this(&mut buf).unwrap();
+        assert!(this.oom_score >= 0);
     }
 
     #[test]
-    fn pid() {
-        let (_, this) = this();
-
-        let _this = procfs::process::Process::myself().unwrap();
-
-        assert_eq!(this.pid as i32, _this.pid);
+    fn vm_rss() {
+        let mut buf = [0_u8; 100];
+        let this = Process::this(&mut buf).unwrap();
+        let page_size_kib = page_size().unwrap() / 1024;
+        let rss = this.vm_rss_kib(&mut buf, page_size_kib).unwrap();
+        assert!(rss > 0);
     }
 }

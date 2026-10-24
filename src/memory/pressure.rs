@@ -1,48 +1,35 @@
+//! PSI (Pressure Stall Information) reading - minimal allocation
+
 use std::fs::File;
 use std::io::Read;
 
 use crate::error::{Error, Result};
 use crate::utils::str_from_bytes;
 
-macro_rules! malformed {
-    () => {
-        Error::MalformedPressureFile
-    };
-}
+const PSI_PATH: &str = "/proc/pressure/memory";
 
-/// Returns the `some avg10` value from `/proc/pressure/memory`.
-/// This is the percentage of recent time during which at least one task was
-/// stalled by memory pressure. The `total` field, rather than `avg10`, holds
-/// the cumulative stall time in microseconds.
-///
-/// The data we're reading looks like:
-/// ```text
-/// some avg10=0.00 avg60=0.00 avg300=0.00 total=0
-/// ```
+/// Read `some avg10` from /proc/pressure/memory
+/// Returns percentage of time tasks were stalled on memory (0-100)
 pub fn pressure_some_avg10(buf: &mut [u8]) -> Result<f32> {
-    let mut file = File::open("/proc/pressure/memory")?;
+    let mut file = File::open(PSI_PATH)?;
     buf.fill(0);
-
-    // `buf` won't be large enough to fit all of `/proc/pressure/memory`
-    // but will be large enough to hold at least the first line, which has the data we want
     file.read(buf)?;
-    let contents = str_from_bytes(buf)?;
-
-    let line = contents.lines().next().ok_or(malformed!())?;
-    let mut words = line.split_ascii_whitespace();
-    if let Some(indicator) = words.next() {
-        // This has to be the case but checking to be sure
-        if indicator == "some" {
-            let entry = words.next().ok_or(malformed!())?;
-
-            // The entry is of the form `avg10=0.00`
-            // We'll break this string in two in order to parse the value on the right-hand side
-            let equals_pos = entry.find('=').ok_or(malformed!())?;
-            let avg10 = entry.get(equals_pos + 1..).ok_or(malformed!())?;
-            let avg10: f32 = avg10.trim().parse()?;
-            return Ok(avg10);
-        }
-    }
-
-    Err(malformed!())
+    
+    let line = str_from_bytes(buf)?
+        .lines()
+        .next()
+        .ok_or(Error::MalformedPressureFile)?;
+    
+    // Parse: "some avg10=X.XX avg60=X.XX avg300=X.XX total=X"
+    // Find "avg10=" and parse the float after it
+    let Some(pos) = line.find("avg10=") else {
+        return Err(Error::MalformedPressureFile);
+    };
+    
+    let val_str = &line[pos + 6..];
+    let Some(end) = val_str.find(' ').or_else(|| val_str.find('\n')) else {
+        return Err(Error::MalformedPressureFile);
+    };
+    
+    val_str[..end].trim().parse().map_err(Into::into)
 }

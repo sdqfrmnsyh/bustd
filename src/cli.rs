@@ -1,34 +1,62 @@
-use argh::FromArgs;
+//! Command-line argument parsing - zero dependency, minimal allocations
 
-#[derive(FromArgs)]
-/// Lightweight process killer daemon for out-of-memory scenarios
+use crate::error::{Error, Result};
+
+#[derive(Debug, Clone, Copy)]
 pub struct CommandLineArgs {
-    /// toggles on verbose output
-    #[argh(switch, short = 'V')]
     pub verbose: bool,
-
-    /// when set, the process will not be daemonized
-    #[argh(switch, short = 'n')]
     pub no_daemon: bool,
-
-    /// sets the PSI value on which, if surpassed, a process will be killed
-    #[argh(option, short = 'p', long = "psi", default = "25.0")]
-    pub cutoff_psi: f32, // TODO: responsitivity multiplier?
-
-    #[cfg(feature = "glob-ignore")]
-    /// all processes whose names match any of the supplied vertical bar-separated glob patterns will never be chosen to be killed
-    #[argh(
-        option,
-        short = 'u',
-        long = "unkillables",
-        from_str_fn(parse_unkillables)
-    )]
-    pub ignored: Option<Vec<glob::Pattern>>,
+    pub cutoff_psi: f32,
 }
 
-#[cfg(feature = "glob-ignore")]
-fn parse_unkillables(arg: &str) -> Result<Vec<glob::Pattern>, String> {
-    let unkillables: Result<Vec<_>, _> = arg.split('|').map(glob::Pattern::new).collect();
+impl Default for CommandLineArgs {
+    fn default() -> Self {
+        Self {
+            verbose: false,
+            no_daemon: false,
+            cutoff_psi: 25.0,
+        }
+    }
+}
 
-    unkillables.map_err(|err| err.to_string())
+pub fn parse_args() -> Result<CommandLineArgs> {
+    let mut args = CommandLineArgs::default();
+    let mut args_iter = std::env::args().skip(1).peekable();
+
+    while let Some(arg) = args_iter.next() {
+        match arg.as_str() {
+            "-V" | "--verbose" => args.verbose = true,
+            "-n" | "--no-daemon" => args.no_daemon = true,
+            "-p" | "--psi" => {
+                let val = args_iter.next().ok_or(Error::ParseFloat)?;
+                args.cutoff_psi = val.parse()?;
+            }
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("Unknown argument: {arg}");
+                print_help();
+                return Err(Error::ParseFloat);
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+fn print_help() {
+    eprintln!(
+        "bustd - Lightweight OOM killer daemon
+
+Usage: bustd [OPTIONS]
+
+Options:
+  -V, --verbose      Enable verbose output
+  -n, --no-daemon    Run in foreground (for systemd)
+  -p, --psi <FLOAT>  PSI cutoff percentage (default: 25.0)
+  -h, --help         Show this help
+"
+    );
 }

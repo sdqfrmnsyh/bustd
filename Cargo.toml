@@ -8,31 +8,29 @@ repository = "https://github.com/vrmiguel/bustd"
 description = "Lightweight process killer daemon for out-of-memory scenarios"
 categories = ["command-line-utilities", "memory-management"]
 license = "MIT"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-glob = { version = "0.3.1", optional = true }
-libc      = "0.2.144"
-cfg-if    = "1.0.0"
-daemonize = "0.5.0"
-argh      = "0.1.10"
-memchr    = "2.5.0"
+libc = "0.2"
+cfg-if = "1.0"
+memchr = "2.5"
+# glob = { version = "0.3", optional = true }  # Disabled by default for size
 
 [build-dependencies]
-cc   = "1.0.68"
-libc = "0.2.97"
+cc = "1.0"
+libc = "0.2"
 
 [dev-dependencies]
-# Using a somewhat popular crate, `procfs`, to test our own
-# implementation of proc-fs reads.
-# Probably not the best decision possible but OK for now
-procfs = { version = "0.14.2", default-features = false }
+procfs = { version = "0.14", default-features = false }
 
 [features]
-glob-ignore = ["glob"]
+# glob-ignore = ["glob"]  # Enable only if needed
 
 [profile.release]
 lto = true
 codegen-units = 1
-opt-level = 3
+opt-level = "z"  # Optimize for size (z) over speed (3) - better for cache on weak CPU
 strip = true
+panic = "abort"  # Smaller binary, no unwind tables
+incremental = false
+debug = false
+overflow-checks = false

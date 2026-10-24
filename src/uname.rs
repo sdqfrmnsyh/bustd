@@ -1,55 +1,44 @@
-use std::ffi::CStr;
-use std::mem;
+//! uname wrapper - minimal
+
+use core::ffi::CStr;
+use core::mem;
+
+use libc::{uname, utsname};
 
 use crate::error::{Error, Result};
 use crate::linux_version::LinuxVersion;
-use libc::{uname, utsname};
 
 pub struct Uname {
-    uts_struct: utsname,
+    uts: utsname,
 }
 
 impl Uname {
+    #[inline]
     pub fn new() -> Result<Self> {
-        // Safety: libc::utsname is a bunch of char arrays and therefore
-        //         can be safely zeroed.
-        let mut uts_struct: utsname = unsafe { mem::zeroed() };
-
-        let ret_val = unsafe { uname(&mut uts_struct) };
-
-        // uname returns a negative number upon failure
-        if ret_val < 0 {
+        let mut uts: utsname = unsafe { mem::zeroed() };
+        if unsafe { uname(&mut uts) } < 0 {
             return Err(Error::UnameFailed);
         }
-
-        Ok(Self { uts_struct })
+        Ok(Self { uts })
     }
 
+    #[inline]
     pub fn print_info(&self) -> Result<()> {
-        // Safety: dereference of these raw pointers are safe since we know they're not NULL, since
-        // the buffers in struct utsname are all correctly allocated in the stack at this moment
-        let sysname = unsafe { CStr::from_ptr(self.uts_struct.sysname.as_ptr()) };
-        let hostname = unsafe { CStr::from_ptr(self.uts_struct.nodename.as_ptr()) };
-        let release = unsafe { CStr::from_ptr(self.uts_struct.release.as_ptr()) };
-        let arch = unsafe { CStr::from_ptr(self.uts_struct.machine.as_ptr()) };
-
-        let sysname = sysname.to_str()?;
-        let hostname = hostname.to_str()?;
-        let release = release.to_str()?;
-        let arch = arch.to_str()?;
+        let sysname = unsafe { CStr::from_ptr(self.uts.sysname.as_ptr()) }.to_str()?;
+        let hostname = unsafe { CStr::from_ptr(self.uts.nodename.as_ptr()) }.to_str()?;
+        let release = unsafe { CStr::from_ptr(self.uts.release.as_ptr()) }.to_str()?;
+        let arch = unsafe { CStr::from_ptr(self.uts.machine.as_ptr()) }.to_str()?;
 
         println!("OS:           {}", sysname);
         println!("Hostname:     {}", hostname);
         println!("Version:      {}", release);
         println!("Architecture: {}", arch);
-
         Ok(())
     }
 
+    #[inline]
     pub fn parse_version(&self) -> Result<LinuxVersion> {
-        let release = unsafe { CStr::from_ptr(self.uts_struct.release.as_ptr()) };
-        let release = release.to_str()?;
-
+        let release = unsafe { CStr::from_ptr(self.uts.release.as_ptr()) }.to_str()?;
         LinuxVersion::from_str(release).ok_or(Error::InvalidLinuxVersion)
     }
 }

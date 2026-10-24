@@ -1,39 +1,19 @@
-#![allow(unused)]
+//! Error types - minimal, no std::error::Error impl overhead
 
-use std::{any::Any, str::Utf8Error};
+use std::str::Utf8Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    // Only possible uname error: "buf is invalid"
     UnameFailed,
-    ProcessNotFound(&'static str),
+    ProcessNotFound,
     InvalidSignal,
-    Io {
-        reason: String,
-    },
-    Daemonize {
-        error: daemonize::Error,
-    },
-    #[allow(unused)]
-    Unicode {
-        error: Utf8Error,
-    },
+    Io,
     NoPermission,
-
-    // mlockall-specific errors
     CouldNotLockMemory,
     TooMuchMemoryToLock,
     InvalidFlags,
-    // Should not happen but better safe than sorry
     UnknownMlockall,
     UnknownKill,
-
-    #[cfg(feature = "glob-ignore")]
-    GlobPattern {
-        error: glob::PatternError,
-    },
-
-    // Errors that are likely impossible to happen
     InvalidLinuxVersion,
     MalformedStatm,
     MalformedPressureFile,
@@ -41,45 +21,24 @@ pub enum Error {
     ParseFloat,
     SysConfFailed,
     SysInfoFailed,
+    Utf8,
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
+// From impls for automatic conversion
 impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io {
-            reason: err.to_string(),
-        }
-    }
+    #[inline] fn from(_: std::io::Error) -> Self { Error::Io }
 }
 
 impl From<std::num::ParseIntError> for Error {
-    fn from(_: std::num::ParseIntError) -> Self {
-        Self::ParseInt
-    }
+    #[inline] fn from(_: std::num::ParseIntError) -> Self { Error::ParseInt }
 }
 
 impl From<std::num::ParseFloatError> for Error {
-    fn from(_: std::num::ParseFloatError) -> Self {
-        Self::ParseFloat
-    }
+    #[inline] fn from(_: std::num::ParseFloatError) -> Self { Error::ParseFloat }
 }
 
-impl From<daemonize::Error> for Error {
-    fn from(error: daemonize::Error) -> Self {
-        Self::Daemonize { error }
-    }
-}
-
-impl From<std::str::Utf8Error> for Error {
-    fn from(error: std::str::Utf8Error) -> Self {
-        Self::Unicode { error }
-    }
-}
-
-#[cfg(feature = "glob-ignore")]
-impl From<glob::PatternError> for Error {
-    fn from(error: glob::PatternError) -> Self {
-        Self::GlobPattern { error }
-    }
+impl From<Utf8Error> for Error {
+    #[inline] fn from(_: Utf8Error) -> Self { Error::Utf8 }
 }

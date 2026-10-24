@@ -1,49 +1,37 @@
-use libc::{c_int, mlockall};
-use libc::{EAGAIN, EINVAL, ENOMEM, EPERM};
-use libc::{MCL_CURRENT, MCL_FUTURE};
+//! Memory locking via mlockall - prevents daemon from being swapped
+
+use libc::{c_int, mlockall, EAGAIN, EINVAL, ENOMEM, EPERM, MCL_CURRENT, MCL_FUTURE};
 
 use crate::errno::errno;
 use crate::error::{Error, Result};
 
 extern "C" {
-    pub static _MCL_ONFAULT: libc::c_int;
+    static _MCL_ONFAULT: c_int;
 }
 
-pub fn _mlockall_wrapper(flags: c_int) -> Result<()> {
-    let err = unsafe { mlockall(flags) };
-    if err == 0 {
-        return Ok(());
+#[inline]
+fn mlockall_wrapper(flags: c_int) -> Result<()> {
+    match unsafe { mlockall(flags) } {
+        0 => Ok(()),
+        _ => Err(match errno() {
+            EAGAIN => Error::CouldNotLockMemory,
+            EINVAL => Error::InvalidFlags,
+            ENOMEM => Error::TooMuchMemoryToLock,
+            EPERM => Error::NoPermission,
+            _ => Error::UnknownMlockall,
+        }),
     }
-
-    // If err != 0, errno was set to describe the error that mlockall had
-    Err(match errno() {
-        // Some or all of the memory identified by the operation could not be locked when the call was made.
-        EAGAIN => Error::CouldNotLockMemory,
-        // The flags argument is zero, or includes unimplemented flags.
-        EINVAL => Error::InvalidFlags,
-
-        // Locking all of the pages currently mapped into the address space of the process
-        // would exceed an implementation-defined limit on the amount of memory
-        // that the process may lock.
-        ENOMEM => Error::TooMuchMemoryToLock,
-        // The calling process does not have appropriate privileges to perform the requested operation
-        EPERM => Error::NoPermission,
-        // Should not happen
-        _ => Error::UnknownMlockall,
-    })
 }
 
 pub fn lock_memory_pages() -> Result<()> {
-    // TODO: check for _MCL_ONFAULT == -1
-
+    // Try with MCL_ONFAULT first (lazy locking, better for low memory)
     #[allow(non_snake_case)]
     let MCL_ONFAULT: c_int = unsafe { _MCL_ONFAULT };
-    match _mlockall_wrapper(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT) {
-        Err(err) => {
-            eprintln!("First try at mlockall failed: {:?}", err);
-        }
-        Ok(_) => return Ok(()),
+    
+    if mlockall_wrapper(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT).is_ok() {
+        return Ok(());
     }
-
-    _mlockall_wrapper(MCL_CURRENT | MCL_FUTURE)
+    
+    // Fallback without MCL_ONFAULT
+    mlockall_wrapper(MCL_CURRENT | MCL_FUTURE)
 }
